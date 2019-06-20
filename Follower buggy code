@@ -1,0 +1,640 @@
+//
+// Project name: buggy
+// ====================
+//
+// A simple skeleton for wattbot in C
+//
+// Author
+//	Jim Herd, April 2006
+//	Yvan Petillot 2009
+//	Andrew Sharp 2015
+//
+// Description
+//	Basic program to demonstrate moving the wattbot around
+//	Wait for 3 seconds
+//	Do the following sequence 3 times
+//		Move the wattbot forward for 4 seconds then backwards for 4 seconds.
+//	Turn left for 1 second
+//	
+// Target configuration
+//    MCU         :   P18F4585
+//    Oscillator  :   HS, 40.0000MHz
+//    Software    :   Microchip C18 V3.02 Student Version
+//                :   MPLAB V7.31
+//
+// Buggy spec
+//    1. WattBot I vehicle with PIC18F4585 device
+//    2. Full details of the vehicle are available on Vision
+//    3. LEFT and RIGHT motors are defined looking from the back to the front of the vehicle.
+//           The RIGHT motor is driven by PWM unit 1.
+//           The LEFT motor is driven by PWM unit 2.
+//    4. The processor on the vehicle can be either an 18F452 or an 18F4585
+//
+// General notes
+//    1. All required code has been included in a single source file.
+
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+// == Include Files ==
+//
+// Here we 'include' other files that have useful functions that we need.
+// The files that we include are called 'header' files.
+// Apparently some people call these 'copybooks'. See if you can find one.
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+
+// This header file allows us to program the PIC using meaningful words
+#if defined(__18F452)
+#include   <p18f452.h>    
+#endif
+#if defined(__18F4585)
+#include    <p18f4585.h>    
+#endif
+
+#include    <delays.h>		// delays based on processor instructions.
+#include    <timers.h>		// simplifies onboard timer modules.
+#include    <pwm.h>			// Pulse Width Modulation is used to vary the speed.
+#include    <stdlib.h>		// General Utilities - search it if you are interested.
+
+// Here we define datatypes.
+typedef  unsigned char  UINT8;
+typedef  unsigned int   UINT16;
+
+typedef enum {FORWARD, BACKWARD, CONTINUE} DIRECTION;
+
+// Delay routines need the clock speed to calculate delays properly
+#define     PIC_CLK      40000000 //MHz
+
+#define     OFF_PWM      0		// base PWM value == stopped
+#define     FULL_PWM     5		// scale factor to use 0->100% rather than 0->500 dutycycle
+#define		M_WHEEL_DIST 0.15		// replace with the distance between the wattbot wheels on the ground
+
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+// == Function Prototypes ==
+//
+// Calling a function before it is declared will end badly.
+// Add function prototypes here.
+// Adding comments here makes it easy to see what all of your functions can do
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+
+void main (void);
+void MoveTime(int power, unsigned int time);		// move robot in a straight line
+void TurnTime(int power, unsigned int time);		// turn robot
+void TurnAngle(float angle, int speed);				// turn robot specific angle
+void start();
+void SetPower(int left_power, int right_power);							// set motor power as percentage
+void SetSpeed(float left_speed, float right_speed);							// set motor speed in m/s
+void SetDirection(DIRECTION left_direction, DIRECTION right_direction);	// set motor direction
+void Stop(void);														// stop both motors
+void MoveForward (float speed, float DIST);
+void DelayUs(UINT8 cnt);    						// 0->255 microseconds delay
+void DelayMs(UINT16 cnt);       					// 0->65535 milliseconds delay
+void DelayS(UINT8 cnt);         					// 0->255 seconds delay
+void servoRotate0b();								// Rotates servo A 0 degrees
+void servoRotate45();								// Rotates servo A 45 degrees
+void servoRotate90();								// Rotates servo A 90 degrees
+void servoRotate135();								// Rotates servo A 135 degrees
+void servoRotate0();								// Rotates servo B 0 degrees
+void servoRotate10();								// Rotates servo B 10 degrees
+int servoscan();									// Follow the leader
+void OpenBoth_PWM( UINT8 period );					// configure PWM channels
+void SetDutyCyclePWM1(unsigned int dutycycle);		// set Right motor PWM duty
+void SetDutyCyclePWM2(unsigned int dutycycle);		// set Left motor PWM duty
+void SetDutyCyclePWM3(unsigned int dutycycle);		// set Left motor PWM duty
+void ADC_init(void);								// configure the ADC
+UINT16  ADC_Read(UINT8 channel);					// read value from ADC
+
+void init(void);									// set up the wattbot								
+UINT8  left_direction, right_direction;
+int	   left_power, right_power;
+
+unsigned char POT_VALUE;
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+// == Main Program Body ==
+//
+// This is where you should put things that you want the wattbot to do.
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+//---
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+// == Motor Fucntions ==
+//
+// Abstracted functions for motor control.
+//
+// SetPower(int left_power, int right_power)
+//		Purpose:	set motor output as percentage power
+//		Input:		left_power: value from -100 -> 100 for left motor power
+//					right_power: value from -100 -> 100 for right motor power
+//		If the power is set too low the motor will not turn and just whine
+//		This is probably not good for it.
+//		This usually happens below around 30% power but it varies for each wattbot
+//
+// SetSpeed(int left_speed, int right_speed)
+//		Purpose:	set motor speed in meters per second
+//		Input:		left_speed: speed in m/s the left motor should run
+//					right_speed: speed in m/s the right motor should run
+//		This function required calibration for an individual wattbot in order to work correctly!!
+//
+// SetDirection(DIRECTION left_motor, DIRECTION right_motor)
+//		Purpose:	set motor direction
+//		Input:		left motor direction enum
+//					right motor direction enum
+//		enums:		FORWARD: motor drives forwards
+//					BACKWARD: motor drives backwards
+//					CONTINUE: motor direction doesn't change (use to change only one motor)
+//
+//	Stop
+//		Purpose:	this kills the motors
+//
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+
+void SetPower(int left_power, int right_power) {
+	DIRECTION left_direction, right_direction;
+
+	// check for a negative value and make the motor drive backwards
+	if (left_power < 0) {
+		left_direction = BACKWARD;
+		left_power = -left_power;
+	} else {
+		left_direction = FORWARD;
+	}
+	
+
+	if (right_power < 0) {
+		right_direction = BACKWARD;
+		right_power = -right_power;
+	} else {
+		right_direction = FORWARD;
+	}
+
+
+	// we found the motor directions so now we set them
+	SetDirection(left_direction, right_direction);
+
+	// the maximum dutycycle is 500, so scale by 5
+	SetDutyCyclePWM2(FULL_PWM * left_power);
+	SetDutyCyclePWM1(FULL_PWM * right_power);
+}
+
+void SetSpeed(float left_speed, float right_speed) {
+	int left_power, right_power;
+	// check for a negative value and make the motor drive backwards
+	if (left_power < 0) {
+		left_direction = BACKWARD;
+		left_power = -left_power;
+	} else {
+		left_direction = FORWARD;
+	}
+	left_power = (((0.0337*left_speed + 0.0541)*FULL_PWM + 0.5)*10);
+
+	if (right_power < 0) {
+		right_direction = BACKWARD;
+		right_power = -right_power;
+	} else {
+		right_direction = FORWARD;
+	}
+	right_power = (((0.0348*right_speed + 0.0418)*FULL_PWM + 0.5)*10);
+
+	// you should calibrate your wattbot before using SetSpeed
+	// modify the values of left_motor and right_motor 
+	// before the PWM functions are called here
+	SetPower(left_power, right_power);
+
+}
+
+void SetDirection(DIRECTION left_direction, DIRECTION right_direction) {
+	if(left_direction != CONTINUE)									// this will keep the previous motor direction
+		PORTBbits.RB5 = (left_direction == FORWARD) ? 0 : 1;		// this is a conditional operator or 'ternary if'
+	if(right_direction != CONTINUE)									// do it again for the right motor
+		PORTBbits.RB4 = (right_direction == FORWARD) ? 0 : 1;
+               
+}
+
+
+
+void Stop(void) {
+	SetDutyCyclePWM2(0);	// basically just set both motor speeds to 0.
+	SetDutyCyclePWM1(0);
+}
+
+void TurnAngle(float angle, int speed) {
+float angle_rad = angle*3.1415/180;
+	float time_to_turn,time_to_turn_ms;
+	if (angle < 0)
+		{
+		SetSpeed(-speed,speed);
+		time_to_turn =((M_WHEEL_DIST*-1.0*angle_rad*1000)/(2*speed));
+		}
+			else
+					{
+					SetSpeed(speed,-speed);
+					time_to_turn =((M_WHEEL_DIST*angle_rad*1000)/(2*speed));
+					}
+	time_to_turn_ms = time_to_turn*1000;
+	DelayMs(time_to_turn_ms);
+	Stop();	
+}
+
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+// == Delay Routines ==
+//
+// Designed by Shane Tolmie of KeyGhost corporation.  Freely distributable.
+// Questions and comments to shane@keyghost.com
+//
+// DelayUs(UINT8 uS_value)
+//		Purpose:	Microseconds delay
+//		Inputs:		uS_value	-	number of microseconds to delay for (0 to 255)
+//
+// DelayMs(UINT16 cnt)
+//		Purpose:	Milliseconds delay (not Megasecond!)
+//		Inputs:		cnt			-	number of miliseconds to delay for (0 to 65535)
+//
+// DelayS(UINT8 cnt)
+//		Purpose:	Seconds delay
+//		Inputs:		cnt			-	number of seconds to delay for (0 to 255)
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+
+#if PIC_CLK == 40000000
+    void DelayUs(UINT8 uS_value) {
+		// delay for 10 instructions, 1 / (4e7/4 * 10) = 1us. defined in delay.h
+        Delay10TCYx(uS_value);
+    }
+#elif PIC_CLK == 20000000
+    void DelayUs(UINT8 uS_value) {
+        Delay10TCYx(uS_value >> 1);
+    }
+#else
+	#error delay.h - please define PIC_CLK correctly
+#endif
+
+void DelayMs(UINT16 cnt) {
+	UINT8	i;
+	do {
+		i = 4;
+		do {
+			DelayUs(250);
+		} while(--i);
+	} while(--cnt);
+}
+
+void DelayS(UINT8 cnt) {
+	UINT8 i;
+	do {
+		i = 4;
+		do {
+			DelayMs(250);
+		} while(--i);
+	} while(--cnt);
+}
+
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+// == PWM == 
+// 
+// Set-up and control of PWM channels for setting motor speed
+//
+// OpenBoth_PWM(UINT8 period)
+//		Purpose:	configure two PWM channels
+//		Input:		period default is 124 -> 12.5us
+//
+// SetDutyCyclePWM1(UINT16 dutycycle)
+//		Purpose:	set the duty of the first PWM channel (4585 = pin C2/17)
+//		Input:		duty is calculated from the lowest 10 bits
+//
+// SetDutyCyclePWM2(UINT16 dutycycle)
+//		Purpose:	set the duty of the first PWM channel (4585 = pin D4/27)
+//		Input:		duty is calculated from the lowest 10 bits
+//
+// Period = (PR2 + 1 (125)) * 4 * Tosc (25ns) * TMR2PR (1)
+// Duty Cycle = dutycycle * Tosc (25ns) * TMR2PR (1)
+// 
+// The maximum duty cycle is then 
+//		dutycycle = (PR2 + 1 (125)) * 4 = 500
+//
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+
+void OpenBoth_PWM(UINT8 period) {
+    CCP1CON=0b00001100;      // set capture/compare/pwm module 1 to PWM  mode
+    T2CONbits.TMR2ON = 0;    // STOP TIMER2 registers to POR state
+    PR2 = period;            // set period
+    TRISCbits.TRISC2 = 0;    // configure pin 2 of PORTC as output
+
+    ECCP1CON=0b00001100;     // set enhanced capture/compare/pwm module 1 to PWM mode
+
+#if defined(__18F452)
+    TRISCbits.TRISC1 = 0;    // configure pin 1 of PORTC as output
+#endif
+#if defined(__18F4585)
+    TRISDbits.TRISD4 = 0;    // configure pin 4 of PORTD as output
+#endif
+#if defined(__18F4585)
+    TRISDbits.TRISD5 = 0;    // configure pin 4 of PORTD as output
+#endif
+
+    OpenTimer2( TIMER_INT_OFF & T2_PS_1_16 & T2_POST_1_1 );
+    T2CONbits.TMR2ON = 1;    // Turn on PWM1  
+}
+
+void SetDutyCyclePWM1(UINT16 dutycycle) {
+	union PWMDC DCycle;
+
+    DCycle.lpwm = dutycycle << 6;       // Save the dutycycle value in the union
+    CCPR1L = DCycle.bpwm[1];            // Write the high byte into CCPR1L
+    CCP1CON = (CCP1CON & 0xCF) | ((DCycle.bpwm[0] >> 2) & 0x30);     // Write the low byte into CCP1CON5:4
+}
+
+void SetDutyCyclePWM2(UINT16 dutycycle) {
+	union PWMDC DCycle;
+
+    DCycle.lpwm = dutycycle << 6;       // Save the dutycycle value in the union
+
+#if defined(__18F452)
+    CCPR2L = DCycle.bpwm[1];            // Write the high byte into CCPR2L   
+    CCP2CON = (CCP2CON & 0xCF) | ((DCycle.bpwm[0] >> 2) & 0x30);    // Write the low byte into CCP2CON5:4 
+#endif
+#if defined(__18F4585)
+    ECCPR1L = DCycle.bpwm[1];           // Write the high byte into CCPR1L  
+    ECCP1CON = (ECCP1CON & 0xCF) | ((DCycle.bpwm[0] >> 2) & 0x30);   // Write the low byte into CCP1CON5:4  
+#endif
+}
+
+
+
+void SetDutyCyclePWM3(UINT16 dutycycle) {
+	union PWMDC DCycle;
+
+    DCycle.lpwm = dutycycle << 6;       // Save the dutycycle value in the union
+    CCPR1L = DCycle.bpwm[1];            // Write the high byte into CCPR1L
+    CCP1CON = (CCP1CON & 0xCF) | ((DCycle.bpwm[0] >> 2) & 0x30);     // Write the low byte into CCP1CON5:4
+}
+
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+// == ADC ==
+// 
+// ADC_init
+//		Purpose:	configure ADC on AN0 (pin 2)
+//
+// ADC_Read(UINT8 channel)
+//		Purpose:	read & return ADC result
+//		Input:		Unless ADCON1<3:0> is changed this must be 0.
+//		Output:		10bit result packed as 16bit uint.
+//
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+
+void ADC_init(void) {
+    ADCON0 = 0;				// select channel AN0
+    ADCON1 = 0b00001110;	// use source voltage / AN0 as analog input
+    ADCON2 = 0b10101010;   	// (ADC_RIGHT_JUST | ADC_12_TAD | ADC_FOSC_32)
+    ADCON0bits.ADON = 1;   // Enable the A/D subsystem
+}
+
+UINT16  ADC_Read(UINT8 channel) {
+	union {
+		UINT8   br[2];
+		UINT16  lr;
+	} i;
+
+    ADCON0 = ((channel << 2) & 0b00111100) | 0b00000001;	// set channel
+    ADCON0bits.GO = 1;										// go!
+    while(ADCON0bits.GO != 0) {}							// result is ready when go is cleared
+
+    i.br[0] = ADRESL;				// Read ADRESL into the lower byte
+    i.br[1] = ADRESH;				// Read ADRESH into the high byte
+    return (i.lr);     				// Return the 16-bit integer
+}
+//--------------------------------------------------------------------------
+
+void MoveForward (float speed, float DIST)
+{				
+				float wait;
+				SetSpeed(speed,speed);
+				wait = (1000 * DIST * 10.0)/ (1.0*speed);
+				SetDirection(FORWARD,FORWARD);
+				DelayMs(wait);
+				Stop();
+	
+}
+
+
+
+void forward_search()
+{
+int i,x=0; // sets variable I and x to be an int	
+	for(i=1;i<=10;i++){ // loops the function ‘MoveForward’ 10 times
+		MoveForward(100,1); // calls function ‘MoveForward’ at 100% speed and 1cm for distance
+			if(ADC_Read(0)>=232) { // if the object is within 12cms
+				DelayS(3); // 
+					if(ADC_Read(0)>=184){
+					return 0; //
+				}
+			}
+	}
+	return 1;
+}
+
+
+void servoRotate90() //0 Degree
+{
+ int count=0;
+
+TRISB = 0x00;
+PORTB = 0x00;
+
+	{
+		for(count=0;count<50;count++)
+		{  //far counter-clockwise
+		PORTB = 0x01;
+		Delay1KTCYx(12);
+		PORTB = 0x00;
+		Delay1KTCYx(90);
+		}
+	;}
+}
+
+void servoRotate45() //0 Degree
+{
+ int count=0;
+
+TRISB = 0x00;
+PORTB = 0x00;
+
+	{
+		for(count=0;count<50;count++)
+		{  //far counter-clockwise
+		PORTB = 0x01;
+		Delay1KTCYx(8);
+		PORTB = 0x00;
+		Delay1KTCYx(90);
+		}
+	;}
+}
+
+void servoRotate0() //0 Degree
+{
+ int count=0;
+
+TRISB = 0x00;
+PORTB = 0x00;
+	for(count=0;count<50;count++)
+{
+		PORTB = 0x01;
+		Delay1KTCYx(3);//delay for (1000 instruction cycle)*3 Delay time = 1000 *(1/10)*e-6 * 3 = 0.25 ms
+		PORTB = 0x00;
+		Delay1KTCYx(90);
+
+		}
+}
+
+void servoRotate0b() //0 Degree
+{
+ int count=0;
+
+TRISB = 0x00;
+PORTB = 0x00;
+	for(count=0;count<50;count++)
+{
+		PORTB = 0x02;
+		Delay1KTCYx(3);//delay for (1000 instruction cycle)*3 Delay time = 1000 *(1/10)*e-6 * 3 = 0.25 ms
+		PORTB = 0x00;
+		Delay1KTCYx(90);
+		}
+}
+
+void servoRotate135() //0 Degree
+{
+ int count=0;
+
+TRISB = 0x00;
+PORTB = 0x00;
+
+	{
+
+		for(count=0;count<50;count++)
+		{  //far counter-clockwise
+		PORTB = 0x01;
+		Delay1KTCYx(15);
+		PORTB = 0x00;
+		Delay1KTCYx(90);
+		}
+	}
+}
+
+void servoRotate10() //0 Degree
+{
+ int count=0;
+
+TRISB = 0x00;
+PORTB = 0x00;
+
+	{
+		for(count=0;count<50;count++)
+		{  
+		PORTB = 0x02;
+		Delay1KTCYx(6);
+		PORTB = 0x00;
+		Delay1KTCYx(90);
+		}
+	;}
+}
+
+int servoscan(){
+int angle; // sets ‘angle’ as a variable
+servoRotate90(); // sets servo A to centre postion			
+forward_search(); // calls forward_search function
+// the delay after the servo rotates are there to give the IR sensor time to take a reading
+DelayS(1); // 
+servoRotate45(); // turns servo A -45 degrees 
+DelayS(1); 
+servoRotate10(); // turns servo B 10 degrees 
+DelayS(1); // 
+servoRotate0b(); // resets servo B back to starting position
+if(ADC_Read(0)>=91){ // if object is within 30cms it will go into this loop
+angle=1; // sets ‘angle’ to 1
+if(angle=1){ // if angle equal to 1 goes into this loop
+DelayS(1); //
+TurnAngle(10,50); // turns a 30 degrees
+servoRotate90(); // sets servo A to centre postion 
+}
+return 1; // return 1 is used as it will exit the loop and go back to the beginning
+}	
+DelayS(1);
+servoRotate90(); // sets servo A to centre postion
+DelayS(1);
+servoRotate10();
+DelayS(1);
+servoRotate0b();
+if(ADC_Read(0)>=91){
+angle=2;
+if(angle=2){
+DelayS(1);
+MoveForward(50,5);
+}
+return 1;
+}
+DelayS(1);
+servoRotate135(); // turns 45 degrees 
+DelayS(1);
+servoRotate10();
+DelayS(1);
+servoRotate0b();
+if(ADC_Read(0)>=91){
+angle=3;
+if(angle=3){
+DelayS(1);
+TurnAngle(-10,50); //turns -30 Degrees 
+servoRotate90();// sets servo A to centre postion
+}
+return 1;
+}
+DelayS(2);			
+return 0; // return 0 is used so that the program knows it has succcefully competed the sequence
+}
+
+
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+// == init ==
+//
+// init
+//		Purpose: 	call set up of subsystems and configure pins for IO
+//
+//----------------------------------------------------------------------------
+//----------------------------------------------------------------------------
+
+void init(void) {
+    OpenBoth_PWM( 124 );		// Configure 2 PWM hardware subsystems for driving motors.
+//	SetDCPWM2(0);        // 18f452
+	SetDutyCyclePWM1(0);		// Stop the wattbot from running away
+    SetDutyCyclePWM2(0);
+    TRISBbits.TRISB4 = 0;		// Set pins used to control direction of motors as outputs
+    TRISBbits.TRISB5 = 0;
+    srand(143);					// initialise random number generator
+    ADC_init();					// Initialise A/D input channel
+
+}
+//----------
+// == Main Program Body ==
+//
+// This is where you should put things that you want the wattbot to do.
+//---
+void main (void)
+{
+	// if you get errors when declaring variables try moving them to the start of a function
+	// We need to run the 'init' function before doing anything
+	// This function tells the wattbot's 'brain' (PIC) how to use its 'legs' (motors)
+    init();
+	// Give yourself time to let go of the wattbot after turning it on
+	DelayS(1);
+servoscan();
+}
+ 
